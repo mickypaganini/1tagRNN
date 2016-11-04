@@ -6,6 +6,7 @@ import os
 import logging
 import numpy as np
 import matplotlib
+matplotlib.use('pdf')
 import matplotlib.pyplot as plt
 from keras.layers import Input, LSTM, Dense, Masking, Activation, Dropout
 from keras.models import Model
