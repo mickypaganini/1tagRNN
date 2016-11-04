@@ -26,10 +26,17 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
     logger = logging.getLogger('main')
 
     # -- concatenate all files into a pandas df
+    short_filenames = [f.split('/')[-1] for f in inputfiles]
     logger.info('Creating pandas dataframes from: {}'.format(
-        [f.split('/')[-1] for f in inputfiles])
+        short_filenames)
     )
-    df = pd.concat([pup.root2panda(f, treename) for f in inputfiles], ignore_index=True)
+    #df = pd.concat([pup.root2panda(f, treename) for f in inputfiles], ignore_index=True)
+    df_list = []
+    for f in inputfiles:
+        df_temp = pup.root2panda(f, treename)
+        df_temp['sample'] = f.split('/')[-1].split('.')[0]
+        df_list.append(df_temp)
+    df = pd.concat(df_list, ignore_index=True)
 
     # -- remove events with more than one correct jet pair
     # -- because that shouldn't happen and complicates the task
@@ -42,6 +49,9 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
     logger.info('Building one-hot target')
     y = df['isCorrect'].values
 
+    # -- extract array of names of sample of origin
+    sample = df['sample'].values
+
     # -- prepend 1 to all entries in y where there is no correct jet pair,
     # -- 0 if there exists a correct jet pair already
     # -- each entry in y will now have length (n_jet_pairs + 1)
@@ -53,10 +63,11 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
     # -- weights
     logger.info('Extracting weights from event_weight')
     w = df['event_weight'].values
-    del df['event_weight'], df['isCorrect']
+    del df['event_weight'], df['isCorrect'], df['sample']
 
     # -- matrix of predictors
     X = df.values
+    varlist = df.columns.values.tolist()
 
     # -- maximum number of jet pairs to consider in each event
     # -- can be set to whatever number makes sense
@@ -66,10 +77,11 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
         max_n_pairs)
     )
 
-    X_train, X_test, y_train, y_test, w_train, w_test = shuffle_split_scale_pad(
-        X, y_long, w, ftrain, max_length
-    ) 
-
+    X_train, X_test, y_train, y_test, w_train, w_test,\
+    sample_train, sample_test, scaler_list = shuffle_split_scale_pad(
+        X, y_long, w, sample, ftrain, max_length
+    )
+    
     logger.info('Saving processed data as hdf5 in data/')
     io.save(
         os.path.join('data', 'train_dict.hdf5'),
@@ -77,6 +89,9 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
             'X' : X_train,
             'y' : y_train,
             'w' : w_train,
+            'vars' : varlist,
+            'sample' : sample_train.tolist(),
+            'scalers' : scaler_list
         }
     )
 
@@ -85,7 +100,10 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
         {
             'X' : X_test,
             'y' : y_test,
-            'w' : w_test
+            'w' : w_test,
+            'vars' : varlist,
+            'sample' : sample_test.tolist(),
+            'scalers' : scaler_list
         }
     )
 
@@ -161,6 +179,7 @@ def _scale(matrix_train, matrix_test):
     Returns:
     --------
         the same matrices after scaling
+        and the scaler_list
     '''
     from sklearn.preprocessing import StandardScaler
     import warnings
@@ -169,6 +188,7 @@ def _scale(matrix_train, matrix_test):
 
         ref_test = matrix_test[:, 0]
         ref_train = matrix_train[:, 0]
+        scaler_list = []
         for col in xrange(matrix_train.shape[1]):
             scaler = StandardScaler()
             matrix_train[:, col] = pup.match_shape(
@@ -187,11 +207,12 @@ def _scale(matrix_train, matrix_test):
                 ).ravel(),
                 ref_test
             )
+            scaler_list.append(scaler)
 
-    return matrix_train, matrix_test
+    return matrix_train, matrix_test, scaler_list
 
 
-def shuffle_split_scale_pad(X, y, w, ftrain, max_length):
+def shuffle_split_scale_pad(X, y, w, sample, ftrain, max_length):
     '''
     Shuffle data, split it into train and test sets, scale X, 
     pads X it with -999, pads y with 0
@@ -200,10 +221,14 @@ def shuffle_split_scale_pad(X, y, w, ftrain, max_length):
         X: ndarray [n_ev_train, n_jetpair_features], containing unscaled predictors
         y: ndarray [n_ev, 1] containing the truth labels
         w: ndarray [n_ev, 1] containing the event weights
+        sample:
+        ftrain:
+        max_length:
     Returns:
     --------
-        all X, y, w ndarrays for both train and test:
-        X_train, X_test, y_train, y_test, w_train, w_test
+        all X, y, w, sample ndarrays for both train and test:
+        X_train, X_test, y_train, y_test, w_train, w_test,
+        sample_train, sample_test
     '''
     # -- configure logger
     logger = logging.getLogger('shuffle_split_scale_pad')
@@ -214,12 +239,13 @@ def shuffle_split_scale_pad(X, y, w, ftrain, max_length):
         ftrain * 100, (1 - ftrain) * 100
         )
     )
-    X_train, X_test, y_train, y_test, w_train, w_test = train_test_split(
-        X, y, w, train_size=ftrain
+    X_train, X_test, y_train, y_test, w_train, w_test,\
+    sample_train, sample_test = train_test_split(
+        X, y, w, sample, train_size=ftrain
     )
 
     logger.info('Scaling X')
-    X_train, X_test = _scale(X_train, X_test)
+    X_train, X_test, scaler_list = _scale(X_train, X_test)
 
     logger.info('Padding X')
     X_train = _paddingX(X_train, max_length=max_length)
@@ -229,7 +255,8 @@ def shuffle_split_scale_pad(X, y, w, ftrain, max_length):
     y_train = _paddingy(y_train, max_length=max_length)
     y_test = _paddingy(y_test, max_length=max_length)
 
-    return X_train, X_test, y_train, y_test, w_train, w_test
+    return X_train, X_test, y_train, y_test, w_train, w_test,\
+    sample_train, sample_test, scaler_list
 
 # ----------------
 
