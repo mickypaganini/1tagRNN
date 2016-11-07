@@ -10,7 +10,7 @@ import deepdish.io as io
 import utils
 import logging
 
-def main(inputfiles, treename, ftrain, max_n_pairs):
+def main(inputfiles, treename, ftrain, max_n_pairs, exclude_list):
     '''
     Args:
     -----
@@ -18,6 +18,7 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
         treename: string, name of the TTree that contains the branches
         ftrain: float in range [0, 1], training fraction
         max_n_pairs: int, maximum number of jet pairs to consider per event
+        exclude_list: 
     Returns:
     --------
     '''
@@ -64,9 +65,12 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
     logger.info('Extracting weights from event_weight')
     w = df['event_weight'].values
     del df['event_weight'], df['isCorrect'], df['sample']
+    df = df.drop(exclude_list, axis=1) # maybe in the future do something
+    # better with these variables instead of just removing them
 
     # -- matrix of predictors
     X = df.values
+    ix = range(X.shape[0])
     varlist = df.columns.values.tolist()
 
     # -- maximum number of jet pairs to consider in each event
@@ -78,8 +82,8 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
     )
 
     X_train, X_test, y_train, y_test, w_train, w_test,\
-    sample_train, sample_test, scaler_list = shuffle_split_scale_pad(
-        X, y_long, w, sample, ftrain, max_length
+    sample_train, sample_test, ix_train, ix_test, scaler_list = shuffle_split_scale_pad(
+        X, y_long, w, sample, ix, ftrain, max_length
     )
     
     logger.info('Saving processed data as hdf5 in data/')
@@ -89,6 +93,7 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
             'X' : X_train,
             'y' : y_train,
             'w' : w_train,
+            'ix': ix_train,
             'vars' : varlist,
             'sample' : sample_train.tolist(),
             'scalers' : scaler_list
@@ -101,6 +106,7 @@ def main(inputfiles, treename, ftrain, max_n_pairs):
             'X' : X_test,
             'y' : y_test,
             'w' : w_test,
+            'ix': ix_test,
             'vars' : varlist,
             'sample' : sample_test.tolist(),
             'scalers' : scaler_list
@@ -212,7 +218,7 @@ def _scale(matrix_train, matrix_test):
     return matrix_train, matrix_test, scaler_list
 
 
-def shuffle_split_scale_pad(X, y, w, sample, ftrain, max_length):
+def shuffle_split_scale_pad(X, y, w, sample, ix, ftrain, max_length):
     '''
     Shuffle data, split it into train and test sets, scale X, 
     pads X it with -999, pads y with 0
@@ -240,8 +246,8 @@ def shuffle_split_scale_pad(X, y, w, sample, ftrain, max_length):
         )
     )
     X_train, X_test, y_train, y_test, w_train, w_test,\
-    sample_train, sample_test = train_test_split(
-        X, y, w, sample, train_size=ftrain
+    sample_train, sample_test, ix_train, ix_test = train_test_split(
+        X, y, w, sample, ix, train_size=ftrain
     )
 
     logger.info('Scaling X')
@@ -256,7 +262,7 @@ def shuffle_split_scale_pad(X, y, w, sample, ftrain, max_length):
     y_test = _paddingy(y_test, max_length=max_length)
 
     return X_train, X_test, y_train, y_test, w_train, w_test,\
-    sample_train, sample_test, scaler_list
+    sample_train, sample_test, ix_train, ix_test, scaler_list
 
 # ----------------
 
@@ -275,6 +281,10 @@ if __name__ == '__main__':
         help="Fraction of events to allocate for training. Default: 0.7.")
     parser.add_argument("--max_n_pairs", type=int, default=8,
         help="Maximum number of jet pairs to consider per event. Default: 8")
+    parser.add_argument("--exclude",
+        nargs="+", default=[], metavar="VARIABLE_NAME", 
+        help="List of variables that are present in the tree but should not be \
+        used by the classifier")
     args = parser.parse_args()
 
-    sys.exit(main(args.input, args.tree, args.ftrain, args.max_n_pairs))
+    sys.exit(main(args.input, args.tree, args.ftrain, args.max_n_pairs, args.exclude))
